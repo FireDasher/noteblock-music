@@ -15,5 +15,5 @@ fn main() {
         },
         ..Default::default()
     };
-	eframe::run_native("Note Block Music Thing", options, Box::new(|cc| Ok(Box::new(app::App::new(cc))))).expect("Failed to run App!");
+	eframe::run_native("Note Block Music", options, Box::new(|cc| Ok(Box::new(app::App::new(cc))))).expect("Failed to run App!");
 }

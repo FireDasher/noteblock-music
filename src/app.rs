@@ -1,4 +1,4 @@
-use std::{fs::File, io::{BufReader, BufWriter}, path::PathBuf};
+use std::{fs::File, io::{BufReader, BufWriter}, path::PathBuf, u32};
 
 use eframe::egui::{self, Color32, Key, Pos2, Rect, Stroke, pos2, vec2};
 use lewton::inside_ogg::OggStreamReader;
@@ -18,6 +18,7 @@ pub struct App {
 	playing: bool,
 
 	scroll: f32,
+	vscroll: f32,
 
 	stream: OutputStream,
 	noteblock_sounds: Vec<SamplesBuffer>,
@@ -51,7 +52,7 @@ impl App {
 			project: Project::new(), project_path: None,
 			current_layer: 0,
 			playback_time: f32::MIN, playing: false,
-			scroll: 0.0,
+			scroll: 0.0, vscroll: 54.0,
 			tps: 10.0,
 			last_played_note: 255, last_playback_time_tick: 0,
 			noteblock_texture: cc.egui_ctx.load_texture("noteblock", egui::ColorImage::from_rgba_unmultiplied([16, 16], include_bytes!("noteblock.bin")), egui::TextureOptions::default()),
@@ -94,6 +95,9 @@ impl App {
 		self.project_path = None;
 		self.current_layer = 0;
 		self.unsaved_changes = false;
+
+		self.scroll = 0.0;
+		self.vscroll = 54.0;
 	}
 
 	fn open(&mut self) {
@@ -103,6 +107,8 @@ impl App {
 				self.project = serde_json::from_reader(BufReader::new(File::open(path).expect("Failed to open file!"))).expect("Failed to load project!");
 				self.current_layer = 0;
 				self.unsaved_changes = false;
+				self.scroll = 0.0;
+				self.vscroll = 54.0;
 			}
 		}
 	}
@@ -153,10 +159,11 @@ impl eframe::App for App {
 					}
 				});
 				ui.menu_button("Edit", |ui| {
-					if ui.button("Remove all notes that are unreachable because they are outside of Minecraft's octave range").clicked() {
-						for layer in &mut self.project.layers {
-							layer.notes.retain(|note| note.note >= 54 && note.note <= 78);
-						}
+					if ui.button("Undo").clicked() {
+						
+					}
+					if ui.button("Redo").clicked() {
+						
 					}
 				});
 				if ui.input(|i| i.modifiers.ctrl && i.key_pressed(Key::S)) { // More convenient save button because why not
@@ -184,6 +191,7 @@ impl eframe::App for App {
 					let response = ui.button(SOUND_FILE_NAMES[i as usize]);
 					if (if i == self.project.layers[self.current_layer].instrument {response.highlight()} else {response}).clicked() {
 						self.project.layers[self.current_layer].instrument = i;
+						self.unsaved_changes = true;
 						self.play_note(66, i);
 					}
 				}
@@ -206,7 +214,7 @@ impl eframe::App for App {
 						}
 						ui.separator();
 					}
-					if to_delete != usize::MAX {
+					if to_delete != usize::MAX && self.project.layers.len() > 1 {
 						self.project.layers.remove(to_delete);
 						self.selected_notes.clear();
 						if self.current_layer >= to_delete {
@@ -216,7 +224,7 @@ impl eframe::App for App {
 					}
 					if ui.button("+").clicked() {
 						self.current_layer = self.project.layers.len();
-						self.project.layers.push(Layer::new(format!("Layer {}", self.project.layers.len()), 0));
+						self.project.layers.push(Layer::new(format!("Layer {}", self.project.layers.len() + 1), 0));
 						self.selected_notes.clear();
 						self.unsaved_changes = true;
 					}
@@ -239,7 +247,8 @@ impl eframe::App for App {
 						self.playback_time += input.stable_dt * self.tps;
 					}
 
-					let playback_tick = self.playback_time as u32;
+					let playback_tick = if self.playback_time < 0.0 {u32::MAX} else {self.playback_time as u32};
+
 					if playback_tick != self.last_playback_time_tick {
 						// Playback marker has crossed one of the beat lines
 						for layer in &self.project.layers {
@@ -256,17 +265,17 @@ impl eframe::App for App {
 
 				{
 					// piano
-					let (rect, _response) = ui.allocate_exact_size(vec2(50.0, size.y), egui::Sense::hover());
+					let (rect, response) = ui.allocate_exact_size(vec2(50.0, size.y), egui::Sense::drag());
 					let painter = ui.painter_at(rect);
 	
-					let holding = input.pointer.button_down(egui::PointerButton::Primary);
+					let holding = response.dragged_by(egui::PointerButton::Primary);
 
 					if !holding {
 						self.last_played_note = 255;
 					}
 	
-					for note in 54u8..=78u8 {
-						let y = rect.bottom() - ((note as f32 - 54.0) * pitch_scale);
+					for note in 0..128 {
+						let y = rect.bottom() - ((note as f32 - self.vscroll) * pitch_scale);
 						let rect2 = Rect::from_min_size(pos2(rect.left(), y - pitch_scale), vec2(50.0, pitch_scale));
 						if holding && let Some(mouse_pos) = input.pointer.interact_pos() && rect2.contains(mouse_pos) {
 							painter.rect_filled(rect2, 2.0, Color32::BLUE);
@@ -277,7 +286,10 @@ impl eframe::App for App {
 						} else {
 							painter.rect(rect2, 2.0, Color32::from_gray(40), egui::Stroke::new(1.0, Color32::from_gray(60)), egui::StrokeKind::Inside);
 						}
-						painter.text(pos2(rect.left(), y), egui::Align2::LEFT_BOTTOM, Self::get_note_name(note), egui::FontId::default(), Color32::WHITE);
+						painter.text(pos2(rect.left(), y), egui::Align2::LEFT_BOTTOM, Self::get_note_name(note), egui::FontId::default(),
+							if note >= 54 && note <= 78
+							{Color32::WHITE} else {Color32::GRAY}
+						);
 					}
 				}
 				{
@@ -287,8 +299,8 @@ impl eframe::App for App {
 	
 					let left = rect.left() - self.scroll * time_scale;
 					// let right = left + (127.0 * time_scale);
-					let bottom = rect.bottom();
-					let top = rect.top();
+					let bottom = rect.bottom() + self.vscroll * time_scale;
+					let top = bottom - pitch_scale * 128.0;
 	
 					// grid
 					for beat in (self.scroll as i32 - 1)..=(self.scroll as i32 + 128) {
@@ -297,8 +309,8 @@ impl eframe::App for App {
 							if beat % 16 == 0 {100} else if beat % 4 == 0 {60} else {40}
 						)));
 					}
-					for note in 54..=78 {
-						let y = bottom - ((note - 54) as f32 * pitch_scale);
+					for note in 0..=128 {
+						let y = bottom - (note as f32 * pitch_scale);
 						painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], egui::Stroke::new(1.0, Color32::from_gray(
 							if note % 12 == 0 {100} else {40}
 						)));
@@ -308,7 +320,7 @@ impl eframe::App for App {
 					for (index, layer) in self.project.layers.iter().enumerate() {
 						for (idx, note) in layer.notes.iter().enumerate() {
 							let x = left + (note.time as f32 * time_scale);
-							let y = bottom - ((note.note as f32 - 54.0) * pitch_scale);
+							let y = bottom - ((note.note as f32) * pitch_scale);
 							let rect2 = Rect::from_min_size(pos2(x, y - pitch_scale), vec2(time_scale, pitch_scale));
 							painter.image(self.noteblock_texture.id(), rect2, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
 								if index == self.current_layer {Color32::WHITE}
@@ -325,6 +337,7 @@ impl eframe::App for App {
 					painter.line_segment([pos2(left + pblx, rect.top()), pos2(left + pblx, rect.bottom())], egui::Stroke::new(3.0, Color32::from_rgb(0, 128, 255)));
 	
 					// interactive
+					self.vscroll -= input.smooth_scroll_delta.x * 0.05;
 					self.scroll -= input.smooth_scroll_delta.y * 0.05;
 					if response.dragged_by(egui::PointerButton::Middle) || response.clicked_by(egui::PointerButton::Middle) {
 						// self.scroll -= response.drag_delta().x / time_scale;
@@ -333,10 +346,10 @@ impl eframe::App for App {
 						}
 					}
 					if response.clicked_by(egui::PointerButton::Primary) {
-						if let Some(mouse_pos) = input.pointer.interact_pos() {
+						if let Some(mouse_pos) = input.pointer.interact_pos() && mouse_pos.y < bottom && mouse_pos.y > top {
 							// create Note
 							let time = (( mouse_pos.x - left ) / time_scale) as u32;
-							let note = (( bottom - mouse_pos.y ) / pitch_scale) as u8 + 54;
+							let note = (( bottom - mouse_pos.y ) / pitch_scale) as u8;
 							self.selected_notes.clear();
 							if self.project.layers[self.current_layer].notes.iter().find(|x| x.time == time && x.note == note).is_none() {
 								self.project.layers[self.current_layer].notes.push(project::Note::new( time, note ));
@@ -347,7 +360,7 @@ impl eframe::App for App {
 					} else if response.clicked_by(egui::PointerButton::Secondary) {
 						if let Some(mouse_pos) = input.pointer.interact_pos() {
 							let time = (( mouse_pos.x - left ) / time_scale) as u32;
-							let note = (( bottom - mouse_pos.y ) / pitch_scale) as u8 + 54;
+							let note = (( bottom - mouse_pos.y ) / pitch_scale) as u8;
 							self.selected_notes.clear();
 							if let Some(found) = self.project.layers[self.current_layer].notes.iter_mut().position(|x| x.time == time && x.note == note) {
 								self.project.layers[self.current_layer].notes.remove(found);
@@ -369,9 +382,9 @@ impl eframe::App for App {
 						let selection_rect = Rect::from_points(&[self.selection_start, self.selection_end]);
 						for (index, note) in self.project.layers[self.current_layer].notes.iter().enumerate() {
 							let x = note.time as f32 * time_scale;
-							let y = (note.note as f32 - 54.0) * pitch_scale;
+							let y = (note.note as f32) * pitch_scale;
 							let rect2 = Rect::from_min_size(pos2(x, y - pitch_scale), vec2(time_scale, pitch_scale));
-							if rect2.intersects(selection_rect) {
+							if !self.selected_notes.contains(&index) && rect2.intersects(selection_rect) {
 								self.selected_notes.push(index);
 							}
 						}
@@ -393,47 +406,59 @@ impl eframe::App for App {
 							self.project.layers[self.current_layer].notes.push(note);
 							*index = self.project.layers[self.current_layer].notes.len() - 1;
 						}
+						self.unsaved_changes = true;
 					}
 					if input.key_pressed(Key::Delete) {
+						self.selected_notes.sort();
 						for index in self.selected_notes.iter().rev() {
 							self.project.layers[self.current_layer].notes.remove(*index);
 						}
 						self.selected_notes.clear();
+						self.unsaved_changes = true;
 					}
 					if input.key_pressed(Key::ArrowRight) {
 						for index in &self.selected_notes {
 							self.project.layers[self.current_layer].notes[*index].time = self.project.layers[self.current_layer].notes[*index].time.saturating_add(1);
 						}
+						self.unsaved_changes = true;
 					}
 					if input.key_pressed(Key::ArrowLeft) {
 						for index in &self.selected_notes {
 							self.project.layers[self.current_layer].notes[*index].time = self.project.layers[self.current_layer].notes[*index].time.saturating_sub(1);
 						}
+						self.unsaved_changes = true;
 					}
 					if input.key_pressed(Key::ArrowUp) {
 						for index in &self.selected_notes {
 							self.project.layers[self.current_layer].notes[*index].note = self.project.layers[self.current_layer].notes[*index].note.saturating_add(1);
 						}
+						self.unsaved_changes = true;
 					}
 					if input.key_pressed(Key::ArrowDown) {
 						for index in &self.selected_notes {
 							self.project.layers[self.current_layer].notes[*index].note = self.project.layers[self.current_layer].notes[*index].note.saturating_sub(1);
 						}
+						self.unsaved_changes = true;
+					}
+
+					if input.key_pressed(Key::R) {
+						self.scroll = 0.0;
+						self.vscroll = 54.0;
 					}
 				}
 			});
 		});
 
 		if self.show_unsaved_changes_confirmation_dialogue_modal_because_exit {
-			egui::Window::new("UNSAVED CHANGED!!!").collapsible(false).resizable(false).show(ctx, |ui| {
-				ui.heading("YOU HAS UNSAVE CHANGE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+			egui::Window::new("Unsaved Changes!!").collapsible(false).resizable(false).show(ctx, |ui| {
+				ui.heading("You have unsaved changes!!! Are you sure you want to exit?");
 				ui.horizontal(|ui| {
 					if ui.button("Save & exit").clicked() {
 						if self.save() { // onlu close window if save was succesfull
 							ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 						}
 					}
-					if ui.button("DELETE ALL YOUR AMAZING CHANGEAS FROM EXISTENCE!!!").clicked() {
+					if ui.button("Discard changes :(").clicked() {
 						self.unsaved_changes = false; // Prevent preventing close
 						ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 					}
@@ -444,8 +469,8 @@ impl eframe::App for App {
 			});
 		}
 		if self.show_unsaved_changes_confirmation_dialogue_modal_because_new {
-			egui::Window::new("UNSAVED CHANGED!!!").collapsible(false).resizable(false).show(ctx, |ui| {
-				ui.heading("YOU HAS UNSAVE CHANGE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+			egui::Window::new("Unsaved Changes!!").collapsible(false).resizable(false).show(ctx, |ui| {
+				ui.heading("You have unsaved changes!!! Are you sure you want to create a new project? (this will delete any unsaved changes)");
 				ui.horizontal(|ui| {
 					if ui.button("Save & new").clicked() {
 						if self.save() { // onlu reset if save was succesfull
@@ -453,7 +478,7 @@ impl eframe::App for App {
 							self.show_unsaved_changes_confirmation_dialogue_modal_because_new = false;
 						}
 					}
-					if ui.button("DELETE ALL YOUR AMAZING CHANGEAS FROM EXISTENCE!!!").clicked() {
+					if ui.button("Discard changes :(").clicked() {
 						self.unsaved_changes = false; // Prevent preventing reset
 						self.reset();
 						self.show_unsaved_changes_confirmation_dialogue_modal_because_new = false;
@@ -465,6 +490,6 @@ impl eframe::App for App {
 			});
 		}
 
-		ctx.send_viewport_cmd(egui::ViewportCommand::Title(if self.unsaved_changes {"Note Block Music Thing*".to_string()} else {"Note Block Music Thing".to_string()}));
+		ctx.send_viewport_cmd(egui::ViewportCommand::Title(if self.unsaved_changes {"Note Block Music*".to_string()} else {"Note Block Music".to_string()}));
 	}
 }

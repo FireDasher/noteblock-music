@@ -36,6 +36,6 @@ pub struct Project {
 
 impl Project {
 	pub fn new() -> Self {
-		Self{ layers: vec![Layer::new("Layer 0".to_string(), 0)] }
+		Self{ layers: vec![Layer::new("Layer 1".to_string(), 0)] }
 	}
 }
